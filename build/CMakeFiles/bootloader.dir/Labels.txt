@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/wyp/esp/stem_framework_idf61_lcd/build/CMakeFiles/bootloader
+/home/wyp/esp/stem_framework_idf61_lcd/build/CMakeFiles/bootloader.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/CMakeFiles/bootloader-complete.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/wyp/esp/stem_framework_idf61_lcd/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

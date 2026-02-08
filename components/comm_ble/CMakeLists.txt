@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "comm_ble.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        bt
+    PRIV_REQUIRES
+        nvs_flash
+)

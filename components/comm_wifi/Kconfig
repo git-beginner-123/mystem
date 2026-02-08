@@ -1,0 +1,13 @@
+menu "COMM WiFi"
+    config COMM_WIFI_SSID
+        string "WiFi SSID"
+        default "YOUR_SSID"
+
+    config COMM_WIFI_PASSWORD
+        string "WiFi Password"
+        default "YOUR_PASSWORD"
+
+    config COMM_WIFI_UDP_PORT
+        int "UDP server port"
+        default 3333
+endmenu

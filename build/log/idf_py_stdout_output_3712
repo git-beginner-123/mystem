@@ -1,0 +1,54 @@
+Command: ninja all
+[1/22] Performing build step for 'bootloader'
+[1/1] cd /home/wyp/esp/stem_framework_idf61_lcd/build/bootloader/esp-idf/esptool_py && /home/wyp/.espressif/python_env/idf5.5_py3.10_env/bin/python /home/wyp/esp/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /home/wyp/esp/stem_framework_idf61_lcd/build/bootloader/bootloader.bin
+Bootloader binary size 0x5240 bytes. 0x2dc0 bytes (36%) free.
+[2/22] No install step for 'bootloader'
+[3/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/core/app.c.obj
+[4/22] Completed 'bootloader'
+[5/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_pwm.c.obj
+[6/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_adc.c.obj
+[7/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_i2c.c.obj
+[8/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_gpio.c.obj
+[9/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/ui/ui_lcd.c.obj
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c: In function 'Ui_DrawExperimentMenu':
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c:505:9: warning: unused variable 'id' [-Wunused-variable]
+  505 |     int id = exp ? exp->id : -1;
+      |         ^~
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c: At top level:
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c:459:20: warning: 'Ui_SkipWrappedLines' defined but not used [-Wunused-function]
+  459 | static const char* Ui_SkipWrappedLines(const char* text, int cols, int skip_lines)
+      |                    ^~~~~~~~~~~~~~~~~~~
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c:452:12: warning: 'Ui_BodyRows' defined but not used [-Wunused-function]
+  452 | static int Ui_BodyRows(void)
+      |            ^~~~~~~~~~~
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c:445:12: warning: 'Ui_BodyCols' defined but not used [-Wunused-function]
+  445 | static int Ui_BodyCols(void)
+      |            ^~~~~~~~~~~
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c:397:13: warning: 'Ui_DrawBodyList' defined but not used [-Wunused-function]
+  397 | static void Ui_DrawBodyList(int selected, int count, Ui_GetItemTextFn get_text)
+      |             ^~~~~~~~~~~~~~~
+/home/wyp/esp/stem_framework_idf61_lcd/main/ui/ui_lcd.c:389:20: warning: 'Ui_ExperimentTitleByIndex' defined but not used [-Wunused-function]
+  389 | static const char* Ui_ExperimentTitleByIndex(int i)
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~
+[10/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_speaker.c.obj
+[11/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_maze.c.obj
+[12/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_wifi_ap.c.obj
+[13/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_uart.c.obj
+/home/wyp/esp/stem_framework_idf61_lcd/main/experiments/exp_uart.c:43:17: warning: 'now_ms' defined but not used [-Wunused-function]
+   43 | static uint32_t now_ms(void)
+      |                 ^~~~~~
+[14/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_mic.c.obj
+[15/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_wifi_sta.c.obj
+[16/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_semaforo.c.obj
+[17/22] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/experiments/exp_ble.c.obj
+[18/22] Linking C static library esp-idf/main/libmain.a
+[19/22] Generating esp-idf/esp_system/ld/sections.ld
+[20/22] Linking CXX executable stem_framework_idf61_lcd.elf
+[21/22] Generating binary image from built executable
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 2 ELF sections
+Successfully created esp32s3 image.
+Generated /home/wyp/esp/stem_framework_idf61_lcd/build/stem_framework_idf61_lcd.bin
+[22/22] cd /home/wyp/esp/stem_framework_idf61_lcd/build/esp-idf/esptool_py && /home/wyp/.espressif/python_env/idf5.5_py3.10_env/bin/python /home/wyp/esp/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/wyp/esp/stem_framework_idf61_lcd/build/partition_table/partition-table.bin /home/wyp/esp/stem_framework_idf61_lcd/build/stem_framework_idf61_lcd.bin
+stem_framework_idf61_lcd.bin binary size 0x15a810 bytes. Smallest app partition is 0x200000 bytes. 0xa57f0 bytes (32%) free.

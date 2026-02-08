@@ -1,0 +1,2 @@
+source /home/wyp/esp/stem_framework_idf61_lcd/build/bootloader/gdbinit/symbols
+source /home/wyp/esp/stem_framework_idf61_lcd/build/bootloader/gdbinit/connect
