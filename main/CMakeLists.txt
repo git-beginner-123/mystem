@@ -19,7 +19,7 @@ idf_component_register(
         "experiments/exp_pwm.c"
         "experiments/exp_adc.c"
         "experiments/exp_uart.c"
-        "experiments/exp_i2c.c"
+        "experiments/exp_tof.c"
         "experiments/exp_mic.c"
         "experiments/exp_maze.c"
         "experiments/exp_speaker.c"
@@ -27,10 +27,11 @@ idf_component_register(
         "experiments/exp_wifi_ap.c"
         "experiments/exp_wifi_sta.c"
         "experiments/exp_semaforo.c"
+        "experiments/exp_lcd_color.c"
         "input/uart1_router.c"
         "input/drv_input_gpio_keys.c"
         "net/remote_web.c"
-        "net/stock_yahoo.c"
+        "net/market_yahoo.c"
 
     INCLUDE_DIRS
         "."
@@ -40,10 +41,16 @@ idf_component_register(
         "display"
         "experiments"
 
+    EMBED_FILES
+        "core/hola_es.pcm"
+
     REQUIRES
         esp_driver_uart
         esp_driver_spi
         esp_driver_gpio
+        esp_driver_ledc
+        esp_driver_i2s
+        driver
         freertos
         esp_system
         esp_common
@@ -55,6 +62,7 @@ idf_component_register(
         esp_wifi
         bt
         nvs_flash
+        mbedtls
         comm_wifi
         comm_ble
         json

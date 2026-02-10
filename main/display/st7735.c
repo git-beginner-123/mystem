@@ -28,11 +28,34 @@ static const char* kTag = "ST7735";
 static spi_device_handle_t s_spi;
 static SemaphoreHandle_t s_lcd_mutex;
 
+// Software color correction defaults (RGB565 space)
+#define ST7735_SW_INVERT_DEFAULT 0
+#define ST7735_SW_RB_SWAP_DEFAULT 1
+#define ST7735_HW_INVERT_DEFAULT 1
+
+static bool s_sw_invert = ST7735_SW_INVERT_DEFAULT;
+static bool s_sw_rb_swap = ST7735_SW_RB_SWAP_DEFAULT;
+static bool s_hw_invert = ST7735_HW_INVERT_DEFAULT;
+
 static inline void lcd_lock(void)   { xSemaphoreTake(s_lcd_mutex, portMAX_DELAY); }
 static inline void lcd_unlock(void) { xSemaphoreGive(s_lcd_mutex); }
 
 static inline void dc_cmd(void)  { gpio_set_level(PIN_DC, 0); }
 static inline void dc_data(void) { gpio_set_level(PIN_DC, 1); }
+
+static inline uint16_t color_apply_sw(uint16_t c)
+{
+    if (s_sw_rb_swap) {
+        uint16_t r = (c >> 11) & 0x1F;
+        uint16_t g = (c >> 5) & 0x3F;
+        uint16_t b = c & 0x1F;
+        c = (uint16_t)((b << 11) | (g << 5) | r);
+    }
+    if (s_sw_invert) {
+        c = (uint16_t)~c;
+    }
+    return c;
+}
 
 // -----------------------------
 // SPI helpers
@@ -135,7 +158,7 @@ static void lcd_dma_queue_pixels_be16(const uint16_t* pixels, int count_words)
 
         uint8_t* dst = s_dma_buf[s_dma_buf_idx];
         for (int i = 0; i < nwords; i++) {
-            uint16_t v = src[i];
+            uint16_t v = color_apply_sw(src[i]);
             dst[i * 2 + 0] = (uint8_t)(v >> 8);
             dst[i * 2 + 1] = (uint8_t)(v & 0xFF);
         }
@@ -158,8 +181,9 @@ static void lcd_dma_queue_color565(uint16_t color565, int count_words)
 {
     dc_data();
 
-    uint8_t hi = (uint8_t)(color565 >> 8);
-    uint8_t lo = (uint8_t)(color565 & 0xFF);
+    uint16_t c = color_apply_sw(color565);
+    uint8_t hi = (uint8_t)(c >> 8);
+    uint8_t lo = (uint8_t)(c & 0xFF);
 
     int remaining = count_words;
     while (remaining > 0) {
@@ -237,6 +261,10 @@ void St7735_Init(void)
 
     hw_reset();
 
+    // Reset software color correction defaults on init
+    s_sw_invert = ST7735_SW_INVERT_DEFAULT;
+    s_sw_rb_swap = ST7735_SW_RB_SWAP_DEFAULT;
+
     write_cmd(0x01);
     vTaskDelay(pdMS_TO_TICKS(150));
     write_cmd(0x11);
@@ -250,9 +278,13 @@ void St7735_Init(void)
 
     write_cmd(0x36);
     {
-        uint8_t d = 0x00; // rotation, adjust if needed
+        uint8_t d = 0x08; // BGR color order, keep rotation = 0
         write_data(&d, 1);
     }
+
+    // Force normal display + inversion OFF (some panels ignore inversion unless normal mode is set)
+    write_cmd(0x13); // Normal display mode
+    write_cmd(ST7735_HW_INVERT_DEFAULT ? 0x21 : 0x20); // Inversion ON/OFF
 
     write_cmd(0x29);
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -271,7 +303,8 @@ void St7735_DrawPixel(int x, int y, uint16_t color565)
     set_addr_window(x, y, x, y);
     dc_data();
 
-    uint8_t d[2] = { (uint8_t)(color565 >> 8), (uint8_t)(color565 & 0xFF) };
+    uint16_t c = color_apply_sw(color565);
+    uint8_t d[2] = { (uint8_t)(c >> 8), (uint8_t)(c & 0xFF) };
     spi_write_polling(d, 2);
 
     lcd_unlock();
@@ -320,3 +353,18 @@ void St7735_Fill(uint16_t color565)
 
     lcd_unlock();
 }
+
+void St7735_SetInversion(bool on)
+{
+    lcd_lock();
+    lcd_dma_wait_all_locked();
+    write_cmd(on ? 0x21 : 0x20);
+    s_hw_invert = on;
+    lcd_unlock();
+}
+
+void St7735_SetSoftwareInvert(bool on) { s_sw_invert = on; }
+void St7735_SetSoftwareRBSwap(bool on) { s_sw_rb_swap = on; }
+bool St7735_GetSoftwareInvert(void) { return s_sw_invert; }
+bool St7735_GetSoftwareRBSwap(void) { return s_sw_rb_swap; }
+bool St7735_GetInversion(void) { return s_hw_invert; }

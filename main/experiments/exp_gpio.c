@@ -3,6 +3,8 @@
 
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "esp_log.h"
+#include "display/st7735.h"
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -22,6 +24,7 @@ static bool s_yellow_on = false;
 static int s_sel = 0;              // 0..2
 static bool s_ui_dirty = true;
 static uint32_t s_last_draw_ms = 0;
+static const char* TAG = "EXP_GPIO";
 
 static uint32_t now_ms(void)
 {
@@ -32,6 +35,7 @@ static uint32_t now_ms(void)
 
 static void draw_full(void)
 {
+    ESP_LOGI(TAG, "draw_full: sel=%d red=%d green=%d yellow=%d", s_sel, s_red_on, s_green_on, s_yellow_on);
     Ui_DrawFrame("GPIO", "DN:NEXT  OK:TOGGLE  BACK");
     Ui_DrawGpioBody(s_sel, s_red_on, s_green_on, s_yellow_on);
 }
@@ -114,6 +118,12 @@ static void show_requirements(ExperimentContext* ctx)
 static void on_enter(ExperimentContext* ctx)
 {
     (void)ctx;
+    ESP_LOGI(TAG, "on_enter");
+
+    // Use default color correction
+    St7735_SetSoftwareInvert(false);
+    St7735_SetSoftwareRBSwap(true);
+    St7735_SetInversion(true);
 
     // Requirement: set outputs on enter
     gpio_set_outputs_mode();
@@ -131,6 +141,12 @@ static void on_enter(ExperimentContext* ctx)
 static void exp_on_exit(ExperimentContext* ctx)
 {
     (void)ctx;
+    ESP_LOGI(TAG, "on_exit");
+
+    // Restore defaults
+    St7735_SetSoftwareInvert(false);
+    St7735_SetSoftwareRBSwap(true);
+    St7735_SetInversion(true);
 
     // Requirement: set inputs on exit
     gpio_set_inputs_mode();
@@ -139,6 +155,12 @@ static void exp_on_exit(ExperimentContext* ctx)
 static void start(ExperimentContext* ctx)
 {
     (void)ctx;
+    ESP_LOGI(TAG, "start");
+
+    // Ensure default correction still applied when starting
+    St7735_SetSoftwareInvert(false);
+    St7735_SetSoftwareRBSwap(true);
+    St7735_SetInversion(true);
 
     // Ensure outputs mode in case framework differs
     gpio_set_outputs_mode();
@@ -158,6 +180,12 @@ static void start(ExperimentContext* ctx)
 static void stop(ExperimentContext* ctx)
 {
     (void)ctx;
+    ESP_LOGI(TAG, "stop");
+
+    // Restore defaults
+    St7735_SetSoftwareInvert(false);
+    St7735_SetSoftwareRBSwap(true);
+    St7735_SetInversion(true);
 
     // Some frameworks call stop before exit
     gpio_set_inputs_mode();
@@ -171,9 +199,11 @@ static void on_key(ExperimentContext* ctx, InputKey key)
     bool changed = false;
 
     if (key == kInputDown) {
+        ESP_LOGI(TAG, "key: DOWN");
         s_sel = (s_sel + 1) % 3;
         changed = true;
     } else if (key == kInputEnter) {
+        ESP_LOGI(TAG, "key: ENTER (sel=%d)", s_sel);
         if (s_sel == 0) s_red_on = !s_red_on;
         else if (s_sel == 1) s_green_on = !s_green_on;
         else s_yellow_on = !s_yellow_on;
@@ -185,6 +215,7 @@ static void on_key(ExperimentContext* ctx, InputKey key)
     }
 
     if (changed) {
+        ESP_LOGI(TAG, "ui redraw: sel=%d red=%d green=%d yellow=%d", s_sel, s_red_on, s_green_on, s_yellow_on);
         // Only redraw BODY, header/footer stay untouched
         Ui_DrawGpioBody(s_sel, s_red_on, s_green_on, s_yellow_on);
     }

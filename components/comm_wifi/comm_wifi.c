@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,6 +25,76 @@ static const int WIFI_CONNECTED_BIT = BIT0;
 
 static TaskHandle_t s_udp_task = NULL;
 static esp_netif_t *s_netif = NULL;
+static bool s_has_target = false;
+static char s_target_ssid[33];
+
+static int cmp_rssi_desc(const void* a, const void* b)
+{
+    const wifi_ap_record_t* pa = (const wifi_ap_record_t*)a;
+    const wifi_ap_record_t* pb = (const wifi_ap_record_t*)b;
+    return (pb->rssi - pa->rssi);
+}
+
+static int wifi_scan_list(CommWifiAp* out, int cap)
+{
+    if (!out || cap <= 0) return 0;
+
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true /* block */);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "scan start failed: %s", esp_err_to_name(err));
+        return 0;
+    }
+
+    uint16_t ap_num = 0;
+    if (esp_wifi_scan_get_ap_num(&ap_num) != ESP_OK || ap_num == 0) {
+        ESP_LOGI(TAG, "scan: no APs found");
+        return 0;
+    }
+
+    wifi_ap_record_t *aps = (wifi_ap_record_t *)calloc(ap_num, sizeof(*aps));
+    if (!aps) {
+        ESP_LOGW(TAG, "scan: out of memory");
+        return 0;
+    }
+
+    int count = 0;
+    if (esp_wifi_scan_get_ap_records(&ap_num, aps) == ESP_OK) {
+        ESP_LOGI(TAG, "scan: %u APs", (unsigned)ap_num);
+        for (uint16_t i = 0; i < ap_num; i++) {
+            const char *auth = (aps[i].authmode == WIFI_AUTH_OPEN) ? "OPEN" : "SEC";
+            ESP_LOGI(TAG, "  %02u) %s  RSSI=%d  %s", i + 1, (char *)aps[i].ssid, aps[i].rssi, auth);
+        }
+
+        int count_all = 0;
+        for (uint16_t i = 0; i < ap_num; i++) {
+            if (aps[i].ssid[0]) {
+                aps[count_all++] = aps[i];
+            }
+        }
+
+        if (count_all > 0) {
+            qsort(aps, (size_t)count_all, sizeof(*aps), cmp_rssi_desc);
+            int pick = (count_all > cap) ? cap : count_all;
+            for (int i = 0; i < pick; i++) {
+                strncpy(out[i].ssid, (char *)aps[i].ssid, sizeof(out[i].ssid) - 1);
+                out[i].ssid[sizeof(out[i].ssid) - 1] = 0;
+                out[i].rssi = aps[i].rssi;
+            }
+            count = pick;
+        }
+    }
+
+    free(aps);
+    return count;
+}
 
 static void udp_echo_task(void *arg)
 {
@@ -79,19 +150,19 @@ static void udp_echo_task(void *arg)
     close(sock);
     vTaskDelete(NULL);
 }
-#if 1
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        ESP_LOGI(TAG, "WIFI_EVENT_STA_START -> esp_wifi_connect()");
-        esp_wifi_connect();
+        ESP_LOGI(TAG, "WIFI_EVENT_STA_START");
         return;
     }
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(TAG, "WIFI_EVENT_STA_DISCONNECTED -> reconnect");
         xEventGroupClearBits(s_wifi_evt, WIFI_CONNECTED_BIT);
-        esp_wifi_connect();
+        if (s_has_target && s_target_ssid[0]) {
+            esp_wifi_connect();
+        }
         return;
     }
 
@@ -106,23 +177,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         return;
     }
 }
-#endif
-#if  0
-static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *)event_data;
-        ESP_LOGW(TAG, "STA_DISCONNECTED: reason=%d", (int)d->reason);
+// (removed old alternative handler and single-pick scan helper)
 
-        // simple retry
-        esp_wifi_connect();
-    }
-}
-#endif
-
-#define WIFI_SSID   "DIGI_mzQH"
-#define WIFI_PASS   "t7TQXUYL6564"
 void comm_wifi_start(void)
 {
     static bool started = false;
@@ -154,22 +210,10 @@ void comm_wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
-    wifi_config_t wifi_cfg = {0};
-    //strncpy((char *)wifi_cfg.sta.ssid, CONFIG_COMM_WIFI_SSID, sizeof(wifi_cfg.sta.ssid));
-    //strncpy((char *)wifi_cfg.sta.password, CONFIG_COMM_WIFI_PASSWORD, sizeof(wifi_cfg.sta.password));
-    
-    strcpy((char *)wifi_cfg.sta.ssid, WIFI_SSID);
-    strcpy((char *)wifi_cfg.sta.password, WIFI_PASS);
-
-    wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    wifi_cfg.sta.pmf_cfg.capable = true;
-    wifi_cfg.sta.pmf_cfg.required = false;
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi STA start requested (SSID=%s)", CONFIG_COMM_WIFI_SSID);
+    ESP_LOGI(TAG, "WiFi STA start requested (scan later)");
     esp_wifi_set_ps(WIFI_PS_NONE);
 
 }
@@ -181,4 +225,43 @@ void comm_wifi_stop(void)
         s_udp_task = NULL;
     }
     esp_wifi_stop();
+}
+
+int comm_wifi_scan_top3(CommWifiAp* out, int cap)
+{
+    int max_out = (cap > 3) ? 3 : cap;
+    int count = wifi_scan_list(out, max_out);
+    if (count > 0) {
+        ESP_LOGI(TAG, "APs top %d:", count);
+        for (int i = 0; i < count; i++) {
+            ESP_LOGI(TAG, "  #%d %s  RSSI=%d", i + 1, out[i].ssid, out[i].rssi);
+        }
+    }
+    return count;
+}
+
+bool comm_wifi_connect_psk(const char* ssid, const char* password)
+{
+    if (!ssid || !ssid[0] || !password) return false;
+
+    wifi_config_t wifi_cfg = {0};
+    strncpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
+    strncpy((char *)wifi_cfg.sta.password, password, sizeof(wifi_cfg.sta.password) - 1);
+    wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_cfg.sta.pmf_cfg.capable = true;
+    wifi_cfg.sta.pmf_cfg.required = false;
+
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+    if (err != ESP_OK) return false;
+
+    strncpy(s_target_ssid, ssid, sizeof(s_target_ssid) - 1);
+    s_has_target = true;
+    return (esp_wifi_connect() == ESP_OK);
+}
+
+bool comm_wifi_is_connected(void)
+{
+    if (!s_wifi_evt) return false;
+    EventBits_t bits = xEventGroupGetBits(s_wifi_evt);
+    return (bits & WIFI_CONNECTED_BIT) != 0;
 }

@@ -21,7 +21,6 @@ lcd_fill(LCD_BLACK);
 #endif
 
 
-    comm_wifi_start();
     CommBle_InitOnce();
     ESP_LOGI(kTag, "start");
     esp_log_level_set("comm_wifi", ESP_LOG_INFO);
