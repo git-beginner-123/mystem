@@ -29,7 +29,8 @@
 static const char* TAG = "EXP_SYSTEM";
 static const char* kSystemTitle = "SETTING";
 static const char* kSystemCopyright = "Copyright (C) 2026 SEESAW";
-static const char* kOtaLatestBase = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota";
+static const char* kOtaGameLatestBase = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota_bins/game";
+static const char* kOtaStemLatestBin = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota_bins/stem/latest.bin";
 
 typedef enum {
     kStateSelectAp = 0,
@@ -134,11 +135,11 @@ static const char* ota_target_slug(OtaTarget t)
 static OtaTarget ota_target_from_url(const char* url)
 {
     if (!url) return kOtaTargetStem;
-    if (strstr(url, "/ota/go/")) return kOtaTargetGo;
-    if (strstr(url, "/ota/chess/")) return kOtaTargetChess;
-    if (strstr(url, "/ota/gomoku/")) return kOtaTargetGomoku;
-    if (strstr(url, "/ota/dice/")) return kOtaTargetDice;
-    if (strstr(url, "/ota/stem/")) return kOtaTargetStem;
+    if (strstr(url, "/ota_bins/game/go/")) return kOtaTargetGo;
+    if (strstr(url, "/ota_bins/game/chess/")) return kOtaTargetChess;
+    if (strstr(url, "/ota_bins/game/gomoku/")) return kOtaTargetGomoku;
+    if (strstr(url, "/ota_bins/game/dice/")) return kOtaTargetDice;
+    if (strstr(url, "/ota_bins/stem/")) return kOtaTargetStem;
     return kOtaTargetStem;
 }
 
@@ -146,7 +147,11 @@ static bool build_selected_ota_url(char* out, size_t cap)
 {
     if (!out || cap < 16) return false;
     out[0] = 0;
-    snprintf(out, cap, "%s/%s/latest.bin", kOtaLatestBase, ota_target_slug(s_ota_target));
+    if (s_ota_target == kOtaTargetStem) {
+        snprintf(out, cap, "%s", kOtaStemLatestBin);
+    } else {
+        snprintf(out, cap, "%s/%s/latest.bin", kOtaGameLatestBase, ota_target_slug(s_ota_target));
+    }
     return true;
 }
 
