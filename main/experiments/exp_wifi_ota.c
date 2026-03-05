@@ -855,8 +855,8 @@ static void on_key(ExperimentContext* ctx, InputKey key)
     (void)ctx;
     if (s_ota_task) return;
 
-    if (key == kInputLeft || key == kInputRight) {
-        if (key == kInputLeft) {
+    if (key == kInputLeft || key == kInputRight || key == kInputWhiteLeft || key == kInputWhiteRight) {
+        if (key == kInputLeft || key == kInputWhiteLeft) {
             s_ota_target = (s_ota_target == 0) ? (kOtaTargetCount - 1) : (s_ota_target - 1);
         } else {
             s_ota_target = (s_ota_target + 1) % kOtaTargetCount;
