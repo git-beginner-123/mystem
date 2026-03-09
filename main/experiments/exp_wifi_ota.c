@@ -155,6 +155,17 @@ static bool build_selected_ota_url(char* out, size_t cap)
     return true;
 }
 
+static void append_cache_buster(char* url, size_t cap)
+{
+    if (!url || cap < 8) return;
+    if (!strstr(url, "/latest.bin")) return;
+    size_t len = strlen(url);
+    if (len + 20 >= cap) return;
+    char sep = (strchr(url, '?') != NULL) ? '&' : '?';
+    uint32_t stamp = now_ms() ^ (esp_random() & 0xFFFFU);
+    snprintf(url + len, cap - len, "%ccb=%u", sep, (unsigned)stamp);
+}
+
 static uint32_t ssid_hash(const char* s)
 {
     uint32_t h = 5381U;
@@ -689,6 +700,7 @@ static void ota_task_connected(void* arg)
         ota_task_exit();
         return;
     }
+    append_cache_buster(s_ota_url, sizeof(s_ota_url));
 
     if (!comm_wifi_is_connected()) {
         set_state(kStateFail, "WiFi disconnected", 0);

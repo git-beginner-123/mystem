@@ -117,6 +117,7 @@ void App_Run(void)
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
+        ctx.consume_back = false;
 
         // SFX policy:
         // No generic key-click sound. Sound is only triggered by explicit events
@@ -215,6 +216,13 @@ void App_Run(void)
             }
 
             if (ev.key == kInputBack) {
+                if (st.selected_exp_id == 23 && exp->on_key) {
+                    exp->on_key(&ctx, ev.key);
+                    if (ctx.consume_back) {
+                        vTaskDelay(pdMS_TO_TICKS(1));
+                        continue;
+                    }
+                }
                 log_mem_point("before_stop", exp);
                 if (exp->stop) exp->stop(&ctx);
                 log_mem_point("after_stop", exp);

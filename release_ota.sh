@@ -17,7 +17,8 @@ Options:
   --bin PATH               Firmware bin path (default: auto-detect)
   --public-ota-repo URL    Public OTA repo URL (default: git@github.com:git-beginner-123/OTA.git)
   --public-ota-dir DIR     Local clone dir for public OTA repo (default: /tmp/stem_ota_public_repo)
-  --public-ota-subdir DIR  OTA subdir in public repo (default: ota)
+  --public-ota-branch NAME Public OTA branch to push (default: main)
+  --public-ota-subdir DIR  OTA subdir in public repo (default: ota_bins)
   --public-ota-target TAG  Target slug in public repo (default: stem)
   --no-public-sync         Do not sync to public OTA repo
   --no-build               Skip idf.py build
@@ -33,7 +34,7 @@ What it does:
   5) Commit + push code and ota files
   6) Create git tag and push
   7) Create/update GitHub release and upload bin + sha256 (unless --git-only)
-  8) Sync to public OTA repo path ota/<target>/latest.bin (unless --no-public-sync)
+  8) Sync to public OTA repo path ota_bins/<target>/latest.bin (unless --no-public-sync)
 EOF
 }
 
@@ -118,12 +119,13 @@ sync_to_public_ota_repo() {
   local source_branch="$3"
   local repo_url="$4"
   local repo_dir="$5"
-  local subdir="$6"
-  local target="$7"
-  local ota_bin="$8"
-  local ota_sha="$9"
-  local ota_latest="${10}"
-  local ota_latest_sha="${11}"
+  local public_branch="$6"
+  local subdir="$7"
+  local target="$8"
+  local ota_bin="$9"
+  local ota_sha="${10}"
+  local ota_latest="${11}"
+  local ota_latest_sha="${12}"
 
   command -v git >/dev/null 2>&1 || {
     info "git not found, skip public OTA sync"
@@ -137,27 +139,11 @@ sync_to_public_ota_repo() {
     git -C "${repo_dir}" remote set-url origin "${repo_url}"
   fi
 
-  local branch
-  branch="$(git -C "${repo_dir}" branch --show-current 2>/dev/null || true)"
-  if [[ -z "${branch}" ]]; then
-    branch="$(git -C "${repo_dir}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
-  fi
-  if [[ -z "${branch}" ]]; then
-    branch="main"
-  fi
+  local branch="${public_branch:-main}"
 
   git -C "${repo_dir}" fetch origin --prune || true
   if git -C "${repo_dir}" show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
-    git -C "${repo_dir}" checkout "${branch}"
-    git -C "${repo_dir}" merge --ff-only "origin/${branch}"
-  elif git -C "${repo_dir}" show-ref --verify --quiet "refs/remotes/origin/main"; then
-    branch="main"
-    git -C "${repo_dir}" checkout "${branch}"
-    git -C "${repo_dir}" merge --ff-only "origin/${branch}"
-  elif git -C "${repo_dir}" show-ref --verify --quiet "refs/remotes/origin/master"; then
-    branch="master"
-    git -C "${repo_dir}" checkout "${branch}"
-    git -C "${repo_dir}" merge --ff-only "origin/${branch}"
+    git -C "${repo_dir}" checkout -B "${branch}" "origin/${branch}"
   else
     git -C "${repo_dir}" checkout -B "${branch}"
   fi
@@ -216,7 +202,8 @@ main() {
   local public_sync=1
   local public_repo_url="${PUBLIC_OTA_REPO_URL:-git@github.com:git-beginner-123/OTA.git}"
   local public_repo_dir="${PUBLIC_OTA_REPO_DIR:-/tmp/stem_ota_public_repo}"
-  local public_subdir="${PUBLIC_OTA_SUBDIR:-ota}"
+  local public_branch="${PUBLIC_OTA_BRANCH:-main}"
+  local public_subdir="${PUBLIC_OTA_SUBDIR:-ota_bins}"
   local public_target="${PUBLIC_OTA_TARGET:-stem}"
   local do_build=1
   local notes=""
@@ -242,6 +229,10 @@ main() {
         ;;
       --public-ota-dir)
         public_repo_dir="$2"
+        shift 2
+        ;;
+      --public-ota-branch)
+        public_branch="$2"
         shift 2
         ;;
       --public-ota-subdir)
@@ -362,7 +353,7 @@ main() {
     info "Syncing to public OTA repo (${public_target})"
     sync_to_public_ota_repo \
       "${version}" "${repo}" "${branch}" \
-      "${public_repo_url}" "${public_repo_dir}" "${public_subdir}" "${public_target}" \
+      "${public_repo_url}" "${public_repo_dir}" "${public_branch}" "${public_subdir}" "${public_target}" \
       "${ota_bin}" "${ota_sha}" "${ota_latest}" "${ota_latest_sha}"
   else
     info "Skip public OTA sync (--no-public-sync)"
@@ -373,7 +364,7 @@ main() {
     info "Stable OTA URL (recommended):"
     echo "https://raw.githubusercontent.com/${repo}/${branch}/ota/latest.bin"
     info "Public OTA URL (shared repo):"
-    echo "https://raw.githubusercontent.com/git-beginner-123/OTA/main/${public_subdir}/${public_target}/latest.bin"
+    echo "https://raw.githubusercontent.com/git-beginner-123/OTA/${public_branch}/${public_subdir}/${public_target}/latest.bin"
     info "Version-pinned OTA URL:"
     echo "https://raw.githubusercontent.com/${repo}/${version}/ota/$(basename "$ota_bin")"
     exit 0

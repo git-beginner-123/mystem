@@ -51,3 +51,18 @@ cat ota/targets.txt
    ota/gomoku/latest.bin
    ota/dice/latest.bin
    ota/stem/latest.bin
+
+[2026-03-04 现场验证记录]
+1) 已验证：STEM -> GO OTA 升级成功
+2) 现象：进入 GO 后，无法再通过 OTA 升级回 STEM（GO -> STEM 失败）
+3) 影响：设备切到 GO 后，回退链路中断；需要在 GAME 仓库补提修复
+
+[GAME 仓库待核对（你准备再次提交）]
+1) GO 的 OTA 菜单是否包含 STEM 目标（UI 显示与索引一致）
+2) GO 的 ota_target_name/ota_target_slug/ota_target_from_url 是否都包含 stem
+3) GO 侧最新 URL 拼接是否为: https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota/stem/latest.bin
+4) GAME 的 app_settings 持久化枚举范围是否已扩为 0..4（避免保存/读取越界）
+5) ota/targets.txt 是否仍包含 "9 STEM stem" 且发布脚本会同步 stem/latest.bin
+
+[结论]
+当前 STEM 仓库过渡逻辑可用；回退问题在 GAME 侧处理更合适。

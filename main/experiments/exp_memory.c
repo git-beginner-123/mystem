@@ -17,6 +17,7 @@ static const char* TAG = "EXP_MEMORY";
 #define UI_FOOTER_H 26
 #define REVEAL_MS 5000U
 #define MEM_MAX_CARDS 6
+#define UP_COMBO_WINDOW_MS 1000U
 
 #define KBD_COLS 6
 #define KBD_ROWS 6
@@ -41,7 +42,13 @@ static int s_digit_slot_focus = 0;
 static uint32_t s_reveal_until_ms = 0;
 static int s_last_countdown_sec = -1;
 static int s_focus_idx = 18; // center key
+static uint32_t s_last_up_key_ms = 0;
+static bool s_up_combo_can_revert = false;
 static MemState s_state = kStateLevelSelect;
+
+static void draw_cards(bool face_up, int focus_idx);
+static void draw_keyboard(void);
+static void draw_guess_slots(void);
 
 static uint32_t now_ms(void)
 {
@@ -74,6 +81,36 @@ static void clear_guess_state(void)
         s_digit_match[i] = false;
     }
     s_digit_slot_focus = 0;
+}
+
+static void move_keyboard_up(void)
+{
+    s_focus_idx = (s_focus_idx + KBD_KEYS - KBD_COLS) % KBD_KEYS;
+    draw_keyboard();
+    St7789_Flush();
+}
+
+static void move_keyboard_down(void)
+{
+    s_focus_idx = (s_focus_idx + KBD_COLS) % KBD_KEYS;
+    draw_keyboard();
+    St7789_Flush();
+}
+
+static void move_slot_focus_left(void)
+{
+    s_digit_slot_focus = (s_digit_slot_focus + s_card_count - 1) % s_card_count;
+    draw_guess_slots();
+    draw_cards(false, s_digit_slot_focus);
+    St7789_Flush();
+}
+
+static void move_slot_focus_right(void)
+{
+    s_digit_slot_focus = (s_digit_slot_focus + 1) % s_card_count;
+    draw_guess_slots();
+    draw_cards(false, s_digit_slot_focus);
+    St7789_Flush();
 }
 
 static void card_xy(int idx, int count, int* out_x, int* out_y, int* out_w, int* out_h)
@@ -206,7 +243,7 @@ static void draw_guess_slots(void)
 
 static void draw_scene(void)
 {
-    const char* footer = "UP/LR:KEY  DN:SLOT  OK:SEL";
+    const char* footer = "UP/DN/LR:KEY BACK:SLOT< OK";
     if (s_state == kStateLevelSelect) footer = "UP/DN:LV OK:OPEN BACK";
     if (s_state == kStateReveal) footer = "MEMORIZE 5S";
     if (s_state == kStateResult) footer = "UP/DN:LV OK:NEXT BACK";
@@ -263,6 +300,8 @@ static void begin_round(void)
     generate_cards();
     clear_guess_state();
     s_focus_idx = 18; // center key by default
+    s_last_up_key_ms = 0;
+    s_up_combo_can_revert = false;
     s_last_countdown_sec = -1;
     s_reveal_until_ms = now_ms() + REVEAL_MS;
     s_state = kStateReveal;
@@ -278,7 +317,8 @@ static void show_requirements(ExperimentContext* ctx)
     Ui_Println("Digits + letters in keypad.");
     Ui_Println("OK reveals cards for 5s.");
     Ui_Println("Then input full sequence.");
-    Ui_Println("UP/L/R: key  DN: slot");
+    Ui_Println("UP/DN/L/R: key");
+    Ui_Println("BACK: move top focus left");
 }
 
 static void on_enter(ExperimentContext* ctx)
@@ -289,6 +329,8 @@ static void on_enter(ExperimentContext* ctx)
     s_card_count = kLevelCardCount[s_level_idx];
     s_state = kStateLevelSelect;
     s_focus_idx = 18;
+    s_last_up_key_ms = 0;
+    s_up_combo_can_revert = false;
     clear_guess_state();
 }
 
@@ -334,21 +376,42 @@ static void on_key(ExperimentContext* ctx, InputKey key)
     }
 
     if (s_state == kStateGuessDigits) {
-        if (key == kInputDown) {
-            s_digit_slot_focus = (s_digit_slot_focus + 1) % s_card_count;
-            draw_guess_slots();
-            draw_cards(false, s_digit_slot_focus);
-            St7789_Flush();
+        uint32_t tnow = now_ms();
+        bool up_combo_active = ((tnow - s_last_up_key_ms) <= UP_COMBO_WINDOW_MS);
+
+        if (key == kInputBack) {
+            move_slot_focus_left();
+            ctx->consume_back = true;
             return;
         }
 
         if (key == kInputLeft) {
+            if (up_combo_active) {
+                if (s_up_combo_can_revert) {
+                    // Cancel the temporary keyboard-up step from UP.
+                    move_keyboard_down();
+                }
+                s_up_combo_can_revert = false;
+                move_slot_focus_left();
+                return;
+            }
+            s_up_combo_can_revert = false;
             s_focus_idx = (s_focus_idx + KBD_KEYS - 1) % KBD_KEYS;
             draw_keyboard();
             St7789_Flush();
             return;
         }
         if (key == kInputRight) {
+            if (up_combo_active) {
+                if (s_up_combo_can_revert) {
+                    // Cancel the temporary keyboard-up step from UP.
+                    move_keyboard_down();
+                }
+                s_up_combo_can_revert = false;
+                move_slot_focus_right();
+                return;
+            }
+            s_up_combo_can_revert = false;
             s_focus_idx = (s_focus_idx + 1) % KBD_KEYS;
             draw_keyboard();
             St7789_Flush();
@@ -356,13 +419,19 @@ static void on_key(ExperimentContext* ctx, InputKey key)
         }
 
         if (key == kInputUp) {
-            // Move one row up on the keyboard and wrap around.
-            s_focus_idx = (s_focus_idx + KBD_KEYS - KBD_COLS) % KBD_KEYS;
-            draw_keyboard();
-            St7789_Flush();
+            s_last_up_key_ms = tnow;
+            s_up_combo_can_revert = true;
+            move_keyboard_up();
+            return;
+        }
+        if (key == kInputDown) {
+            s_up_combo_can_revert = false;
+            move_keyboard_down();
             return;
         }
         if (key == kInputEnter) {
+            s_last_up_key_ms = 0;
+            s_up_combo_can_revert = false;
             char ch = kKeyChars[s_focus_idx];
             s_pick_digits[s_digit_slot_focus] = ch;
             if (s_digit_slot_focus < s_card_count - 1) {

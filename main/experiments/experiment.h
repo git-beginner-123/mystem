@@ -21,7 +21,7 @@ typedef struct {
 } Experiment;
 
 struct ExperimentContext {
-    int dummy;
+    bool consume_back;
 };
 
 const Experiment* ExpWifiRemote_Get(void);
