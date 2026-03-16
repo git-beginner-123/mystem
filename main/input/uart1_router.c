@@ -32,24 +32,27 @@ static volatile bool s_data_enabled = false;
 static KeyParseState s_state = kWaitHead;
 static uint8_t s_cmd = 0;
 
+static const char* key_name(InputKey key)
+{
+    switch (key) {
+        case kInputUp: return "UP";
+        case kInputDown: return "DOWN";
+        case kInputLeft: return "LEFT";
+        case kInputRight: return "RIGHT";
+        case kInputEnter: return "ENTER";
+        case kInputBack: return "BACK";
+        default: return "UNKNOWN";
+    }
+}
+
 static bool cmd_to_key(uint8_t cmd, InputKey* out_key)
 {
-    uint8_t keycode = 0;
     switch (cmd) {
-        case 0x01: keycode = 0x11; break;
-        case 0x02: keycode = 0x12; break;
-        case 0x03: keycode = 0x13; break;
-        case 0x04: keycode = 0x14; break;
-        case 0x05: keycode = 0x15; break;
-        default: return false;
-    }
-
-    switch (keycode) {
-        case 0x11: *out_key = kInputUp;    return true;
-        case 0x12: *out_key = kInputDown;  return true;
-        case 0x13: *out_key = kInputEnter; return true;
-        case 0x14: *out_key = kInputBack;  return true;
-        case 0x15: *out_key = kInputEnter; return true;
+        case 0x01: *out_key = kInputUp; return true;
+        case 0x02: *out_key = kInputDown; return true;
+        case 0x03: *out_key = kInputLeft; return true;
+        case 0x04: *out_key = kInputRight; return true;
+        case 0x05: *out_key = kInputEnter; return true;
         default: return false;
     }
 }
@@ -92,7 +95,8 @@ static void rx_task(void* arg)
                     if (cmd_to_key(s_cmd, &k)) {
                         (void)xQueueSend(s_key_q, &k, 0);
                         s_key_hits++;
-                        ESP_LOGI(TAG, "key frame: AA %02X 55  hits=%lu", (unsigned)s_cmd, (unsigned long)s_key_hits);
+                        ESP_LOGI(TAG, "key frame: AA %02X 55 -> %s hits=%lu",
+                                 (unsigned)s_cmd, key_name(k), (unsigned long)s_key_hits);
 
                     }
                     s_rx_bytes++;

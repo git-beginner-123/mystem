@@ -7,8 +7,8 @@
 
 #define KEY_ACTIVE_LEVEL      0
 #define KEY_DEBOUNCE_MS       25
-#define KEY_LONGPRESS_MS      450
-#define KEY_REPEAT_MS         120
+#define KEY_LONGPRESS_MS      180
+#define KEY_REPEAT_MS         80
 
 // Matrix wiring
 // Cols: GPIO10(GPIO_COL3), GPIO11(GPIO_COL2), GPIO12(GPIO_COL1)
