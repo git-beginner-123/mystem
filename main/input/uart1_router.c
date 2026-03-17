@@ -134,20 +134,19 @@ void Uart1Router_Init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    uart_driver_install(ROUTER_UART_NUM, 4096, 0, 0, NULL, 0);
-    uart_param_config(ROUTER_UART_NUM, &cfg);
-    uart_set_pin(ROUTER_UART_NUM, ROUTER_TX_GPIO, ROUTER_RX_GPIO,
-                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    esp_err_t install_err = uart_driver_install(ROUTER_UART_NUM, 4096, 0, 0, NULL, 0);
+    esp_err_t param_err = uart_param_config(ROUTER_UART_NUM, &cfg);
+    esp_err_t setpin_err = uart_set_pin(ROUTER_UART_NUM, ROUTER_TX_GPIO, ROUTER_RX_GPIO,
+                                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
     s_state = kWaitHead;
     s_cmd = 0;
     s_data_enabled = false;
 
-
     ESP_LOGI("UARTDBG", "install=%s param=%s setpin=%s",
-         esp_err_to_name(uart_driver_install(UART_NUM_1, 4096, 0, 0, NULL, 0)),
-         esp_err_to_name(uart_param_config(UART_NUM_1, &cfg)),
-         esp_err_to_name(uart_set_pin(UART_NUM_1, 35, 36, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)));
+             esp_err_to_name(install_err),
+             esp_err_to_name(param_err),
+             esp_err_to_name(setpin_err));
 
     xTaskCreate(rx_task, "uart1_rx_router", 4096, NULL, 12, NULL);
 }

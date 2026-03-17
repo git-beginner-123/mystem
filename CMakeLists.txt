@@ -18,41 +18,47 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(stem_framework_idf61_lcd)
 
 # Pack generated MJPEG files into the "spiffs" data partition for runtime playback.
-# Prefer single-asset packaging to avoid SPIFFS overflow from unrelated files.
-set(PRIMARY_MJPEG "")
-if(EXISTS "${CMAKE_SOURCE_DIR}/mjpeg_out/space_total.mjpeg")
-    set(PRIMARY_MJPEG "${CMAKE_SOURCE_DIR}/mjpeg_out/space_total.mjpeg")
-elseif(EXISTS "${CMAKE_SOURCE_DIR}/MJPEG_OUT/space_total.mjpeg")
-    set(PRIMARY_MJPEG "${CMAKE_SOURCE_DIR}/MJPEG_OUT/space_total.mjpeg")
+set(SPIFFS_LIMIT_BYTES 2023424)  # 0x1EE000 from partitions.csv
+set(SPIFFS_SAFE_PAYLOAD 1900000)
+set(SPIFFS_STAGE_DIR "${CMAKE_BINARY_DIR}/spiffs_payload")
+set(SOLAR_MJPEG_FILES "")
+
+file(GLOB MJPEG_OUT_FILES RELATIVE "${CMAKE_SOURCE_DIR}" "MJPEG_OUT/*.mjpeg")
+file(GLOB mjpeg_out_files RELATIVE "${CMAKE_SOURCE_DIR}" "mjpeg_out/*.mjpeg")
+list(APPEND SOLAR_MJPEG_FILES ${MJPEG_OUT_FILES} ${mjpeg_out_files})
+list(REMOVE_DUPLICATES SOLAR_MJPEG_FILES)
+list(SORT SOLAR_MJPEG_FILES)
+
+set(SPIFFS_PAYLOAD_SIZE 0)
+foreach(rel_path IN LISTS SOLAR_MJPEG_FILES)
+    file(SIZE "${CMAKE_SOURCE_DIR}/${rel_path}" file_size)
+    math(EXPR SPIFFS_PAYLOAD_SIZE "${SPIFFS_PAYLOAD_SIZE} + ${file_size}")
+endforeach()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/spanish_history")
+    file(GLOB history_files RELATIVE "${CMAKE_SOURCE_DIR}" "assets/spanish_history/*")
+    foreach(rel_path IN LISTS history_files)
+        file(SIZE "${CMAKE_SOURCE_DIR}/${rel_path}" file_size)
+        math(EXPR SPIFFS_PAYLOAD_SIZE "${SPIFFS_PAYLOAD_SIZE} + ${file_size}")
+    endforeach()
 endif()
 
-if(PRIMARY_MJPEG)
-    # Keep headroom for SPIFFS metadata/pages.
-    file(SIZE "${PRIMARY_MJPEG}" PRIMARY_MJPEG_SIZE)
-    set(SPIFFS_LIMIT_BYTES 2023424)  # 0x1EE000 from partitions.csv
-    set(SPIFFS_SAFE_PAYLOAD 1900000)
-    if(PRIMARY_MJPEG_SIZE GREATER SPIFFS_SAFE_PAYLOAD)
-        message(FATAL_ERROR
-            "space_total.mjpeg too large for current SPIFFS partition. "
-            "file=${PRIMARY_MJPEG_SIZE} bytes, safe_limit=${SPIFFS_SAFE_PAYLOAD}, partition=${SPIFFS_LIMIT_BYTES}. "
-            "Compress further or enlarge spiffs in partitions.csv.")
-    endif()
-
-    set(SPIFFS_STAGE_DIR "${CMAKE_BINARY_DIR}/spiffs_payload")
-    file(REMOVE_RECURSE "${SPIFFS_STAGE_DIR}")
-    file(MAKE_DIRECTORY "${SPIFFS_STAGE_DIR}")
-    file(COPY "${PRIMARY_MJPEG}" DESTINATION "${SPIFFS_STAGE_DIR}")
-    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/spanish_history")
-        file(COPY "${CMAKE_SOURCE_DIR}/assets/spanish_history" DESTINATION "${SPIFFS_STAGE_DIR}")
-    endif()
-    spiffs_create_partition_image(spiffs "${SPIFFS_STAGE_DIR}" FLASH_IN_PROJECT)
-else()
-    if(EXISTS "${CMAKE_SOURCE_DIR}/MJPEG_OUT")
-        set(SOLAR_MJPEG_DIR "MJPEG_OUT")
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/mjpeg_out")
-        set(SOLAR_MJPEG_DIR "mjpeg_out")
-    else()
-        set(SOLAR_MJPEG_DIR "MJPEG_OUT")
-    endif()
-    spiffs_create_partition_image(spiffs ${SOLAR_MJPEG_DIR} FLASH_IN_PROJECT)
+if(SPIFFS_PAYLOAD_SIZE GREATER SPIFFS_SAFE_PAYLOAD)
+    message(FATAL_ERROR
+        "SPIFFS payload too large. "
+        "payload=${SPIFFS_PAYLOAD_SIZE} bytes, safe_limit=${SPIFFS_SAFE_PAYLOAD}, partition=${SPIFFS_LIMIT_BYTES}. "
+        "Compress/remove MJPEG files or enlarge spiffs in partitions.csv.")
 endif()
+
+file(REMOVE_RECURSE "${SPIFFS_STAGE_DIR}")
+file(MAKE_DIRECTORY "${SPIFFS_STAGE_DIR}")
+
+foreach(rel_path IN LISTS SOLAR_MJPEG_FILES)
+    file(COPY "${CMAKE_SOURCE_DIR}/${rel_path}" DESTINATION "${SPIFFS_STAGE_DIR}")
+endforeach()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/spanish_history")
+    file(COPY "${CMAKE_SOURCE_DIR}/assets/spanish_history" DESTINATION "${SPIFFS_STAGE_DIR}")
+endif()
+
+spiffs_create_partition_image(spiffs "${SPIFFS_STAGE_DIR}" FLASH_IN_PROJECT)

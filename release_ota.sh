@@ -15,6 +15,7 @@ Options:
   --repo OWNER/REPO        GitHub repo for release (default: detected from origin)
   --branch BRANCH          Git branch to push (default: current branch)
   --bin PATH               Firmware bin path (default: auto-detect)
+  --spiffs-bin PATH        SPIFFS bin path (default: build/spiffs.bin if present)
   --public-ota-repo URL    Public OTA repo URL (default: git@github.com:git-beginner-123/OTA.git)
   --public-ota-dir DIR     Local clone dir for public OTA repo (default: /tmp/stem_ota_public_repo)
   --public-ota-branch NAME Public OTA branch to push (default: main)
@@ -29,12 +30,13 @@ Options:
 What it does:
   1) Optional build (idf.py -DPROJECT_VER=<version> build)
   2) Copy firmware to ota/app-<version>.bin
-  3) Update ota/latest.bin for stable OTA URL
-  4) Generate ota/app-<version>.sha256 and ota/latest.sha256
-  5) Commit + push code and ota files
-  6) Create git tag and push
-  7) Create/update GitHub release and upload bin + sha256 (unless --git-only)
-  8) Sync to public OTA repo path ota_bins/<target>/latest.bin (unless --no-public-sync)
+  3) Copy SPIFFS image to ota/app-<version>.spiffs.bin (if present)
+  4) Update ota/latest.bin and ota/latest.spiffs.bin for stable OTA URLs
+  5) Generate sha256 files for app and SPIFFS artifacts
+  6) Commit + push code and ota files
+  7) Create git tag and push
+  8) Create/update GitHub release and upload app + SPIFFS assets (unless --git-only)
+  9) Sync to public OTA repo path ota_bins/<target>/latest.bin and latest.spiffs.bin (unless --no-public-sync)
 EOF
 }
 
@@ -113,6 +115,15 @@ detect_bin_path() {
   return 1
 }
 
+detect_spiffs_path() {
+  local default_spiffs="build/spiffs.bin"
+  if [ -f "$default_spiffs" ]; then
+    echo "$default_spiffs"
+    return 0
+  fi
+  return 1
+}
+
 sync_to_public_ota_repo() {
   local version="$1"
   local source_repo="$2"
@@ -126,6 +137,10 @@ sync_to_public_ota_repo() {
   local ota_sha="${10}"
   local ota_latest="${11}"
   local ota_latest_sha="${12}"
+  local ota_spiffs_bin="${13:-}"
+  local ota_spiffs_sha="${14:-}"
+  local ota_spiffs_latest="${15:-}"
+  local ota_spiffs_latest_sha="${16:-}"
 
   command -v git >/dev/null 2>&1 || {
     info "git not found, skip public OTA sync"
@@ -154,6 +169,12 @@ sync_to_public_ota_repo() {
   cp -f "${ota_latest_sha}" "${dst_dir}/latest.sha256"
   cp -f "${ota_bin}" "${dst_dir}/app-${version}.bin"
   cp -f "${ota_sha}" "${dst_dir}/app-${version}.sha256"
+  if [ -n "${ota_spiffs_latest}" ] && [ -f "${ota_spiffs_latest}" ]; then
+    cp -f "${ota_spiffs_latest}" "${dst_dir}/latest.spiffs.bin"
+    cp -f "${ota_spiffs_latest_sha}" "${dst_dir}/latest.spiffs.sha256"
+    cp -f "${ota_spiffs_bin}" "${dst_dir}/app-${version}.spiffs.bin"
+    cp -f "${ota_spiffs_sha}" "${dst_dir}/app-${version}.spiffs.sha256"
+  fi
   printf '%s\n' "${version}" > "${dst_dir}/latest.version"
   cat > "${dst_dir}/latest.meta" <<EOF
 project=stem_framework_idf61_lcd
@@ -199,6 +220,7 @@ main() {
   local repo=""
   local branch=""
   local bin_path=""
+  local spiffs_bin_path=""
   local public_sync=1
   local public_repo_url="${PUBLIC_OTA_REPO_URL:-git@github.com:git-beginner-123/OTA.git}"
   local public_repo_dir="${PUBLIC_OTA_REPO_DIR:-/tmp/stem_ota_public_repo}"
@@ -221,6 +243,10 @@ main() {
         ;;
       --bin)
         bin_path="$2"
+        shift 2
+        ;;
+      --spiffs-bin)
+        spiffs_bin_path="$2"
         shift 2
         ;;
       --public-ota-repo)
@@ -301,12 +327,24 @@ main() {
   [ -n "$bin_path" ] || die "Cannot auto-detect firmware bin. Use --bin PATH."
   [ -f "$bin_path" ] || die "Firmware bin not found: $bin_path"
 
+  if [ -z "$spiffs_bin_path" ]; then
+    spiffs_bin_path="$(detect_spiffs_path || true)"
+  fi
+  if [ -n "$spiffs_bin_path" ] && [ ! -f "$spiffs_bin_path" ]; then
+    die "SPIFFS bin not found: $spiffs_bin_path"
+  fi
+
   local ota_dir ota_bin ota_sha ota_latest ota_latest_sha
+  local ota_spiffs_bin ota_spiffs_sha ota_spiffs_latest ota_spiffs_latest_sha
   ota_dir="ota"
   ota_bin="${ota_dir}/app-${version}.bin"
   ota_sha="${ota_dir}/app-${version}.sha256"
   ota_latest="${ota_dir}/latest.bin"
   ota_latest_sha="${ota_dir}/latest.sha256"
+  ota_spiffs_bin="${ota_dir}/app-${version}.spiffs.bin"
+  ota_spiffs_sha="${ota_dir}/app-${version}.spiffs.sha256"
+  ota_spiffs_latest="${ota_dir}/latest.spiffs.bin"
+  ota_spiffs_latest_sha="${ota_dir}/latest.spiffs.sha256"
   mkdir -p "$ota_dir"
 
   info "Preparing OTA artifacts"
@@ -321,9 +359,25 @@ main() {
   [ "$src_hash" = "$ota_hash" ] || die "Hash mismatch: source bin and ota/app-${version}.bin differ."
   [ "$src_hash" = "$latest_hash" ] || die "Hash mismatch: source bin and ota/latest.bin differ."
 
+  if [ -n "$spiffs_bin_path" ]; then
+    cp -f "$spiffs_bin_path" "$ota_spiffs_bin"
+    cp -f "$spiffs_bin_path" "$ota_spiffs_latest"
+    sha256sum "$ota_spiffs_bin" >"$ota_spiffs_sha"
+    sha256sum "$ota_spiffs_latest" >"$ota_spiffs_latest_sha"
+    local src_spiffs_hash ota_spiffs_hash latest_spiffs_hash
+    src_spiffs_hash="$(sha256sum "$spiffs_bin_path" | awk '{print $1}')"
+    ota_spiffs_hash="$(sha256sum "$ota_spiffs_bin" | awk '{print $1}')"
+    latest_spiffs_hash="$(sha256sum "$ota_spiffs_latest" | awk '{print $1}')"
+    [ "$src_spiffs_hash" = "$ota_spiffs_hash" ] || die "Hash mismatch: source spiffs and ota/app-${version}.spiffs.bin differ."
+    [ "$src_spiffs_hash" = "$latest_spiffs_hash" ] || die "Hash mismatch: source spiffs and ota/latest.spiffs.bin differ."
+  fi
+
   info "Staging git changes (excluding build outputs)"
   git add . ':!build/' ':!idf_snapshots/'
   git add "$ota_bin" "$ota_sha" "$ota_latest" "$ota_latest_sha"
+  if [ -n "$spiffs_bin_path" ]; then
+    git add "$ota_spiffs_bin" "$ota_spiffs_sha" "$ota_spiffs_latest" "$ota_spiffs_latest_sha"
+  fi
 
   if ! git diff --cached --quiet; then
     info "Committing changes"
@@ -354,7 +408,8 @@ main() {
     sync_to_public_ota_repo \
       "${version}" "${repo}" "${branch}" \
       "${public_repo_url}" "${public_repo_dir}" "${public_branch}" "${public_subdir}" "${public_target}" \
-      "${ota_bin}" "${ota_sha}" "${ota_latest}" "${ota_latest_sha}"
+      "${ota_bin}" "${ota_sha}" "${ota_latest}" "${ota_latest_sha}" \
+      "${ota_spiffs_bin}" "${ota_spiffs_sha}" "${ota_spiffs_latest}" "${ota_spiffs_latest_sha}"
   else
     info "Skip public OTA sync (--no-public-sync)"
   fi
@@ -375,12 +430,22 @@ main() {
   info "Publishing GitHub release assets to ${repo}"
   if gh release view "${version}" --repo "${repo}" >/dev/null 2>&1; then
     gh release upload "${version}" "$ota_bin" "$ota_sha" --repo "${repo}" --clobber
+    if [ -n "$spiffs_bin_path" ]; then
+      gh release upload "${version}" "$ota_spiffs_bin" "$ota_spiffs_sha" --repo "${repo}" --clobber
+    fi
     info "Release exists; assets uploaded with --clobber"
   else
-    gh release create "${version}" "$ota_bin" "$ota_sha" \
-      --repo "${repo}" \
-      --title "${version}" \
-      --notes "${notes}"
+    if [ -n "$spiffs_bin_path" ]; then
+      gh release create "${version}" "$ota_bin" "$ota_sha" "$ota_spiffs_bin" "$ota_spiffs_sha" \
+        --repo "${repo}" \
+        --title "${version}" \
+        --notes "${notes}"
+    else
+      gh release create "${version}" "$ota_bin" "$ota_sha" \
+        --repo "${repo}" \
+        --title "${version}" \
+        --notes "${notes}"
+    fi
     info "Release created"
   fi
 

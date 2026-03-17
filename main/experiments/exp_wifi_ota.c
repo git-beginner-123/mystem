@@ -6,6 +6,7 @@
 #include "sdkconfig.h"
 
 #include "esp_http_client.h"
+#include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
@@ -13,8 +14,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_app_desc.h"
 #include "nvs.h"
-#include "wifi_provisioning/manager.h"
-#include "wifi_provisioning/scheme_softap.h"
 #include "display/st7789.h"
 #include "qrcode.h"
 
@@ -31,6 +30,9 @@ static const char* kSystemTitle = "SETTING";
 static const char* kSystemCopyright = "Copyright (C) 2026 SEESAW";
 static const char* kOtaGameLatestBase = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota_bins/game";
 static const char* kOtaStemLatestBin = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota_bins/stem/latest.bin";
+static const char* kOtaStemLatestSpiffs = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota_bins/stem/latest.spiffs.bin";
+static const char* kProvServiceName = "SOY_GAME_TECK";
+static const char* kPortalUrl = "http://192.168.4.1";
 
 typedef enum {
     kStateSelectAp = 0,
@@ -65,6 +67,10 @@ static uint8_t* s_qr_matrix = NULL;
 static size_t s_qr_matrix_cap = 0;
 static char s_qr_payload[192];
 static char s_ota_url[200];
+static httpd_handle_t s_httpd = NULL;
+static volatile bool s_apply_pending = false;
+static char s_pending_ssid[33];
+static char s_pending_pass[65];
 
 typedef enum {
     kOtaTargetGo = 0,
@@ -87,6 +93,7 @@ static const char kPassChars[] =
 #define PASS_TOKEN_OK   (-2)
 #define OTA_TASK_STACK_BYTES      6144
 #define OTA_QR_TASK_STACK_BYTES   7168
+#define OTA_PORTAL_HTTPD_STACK_BYTES 3584
 
 static void ota_task_exit(void)
 {
@@ -155,10 +162,19 @@ static bool build_selected_ota_url(char* out, size_t cap)
     return true;
 }
 
+static bool build_selected_spiffs_url(char* out, size_t cap)
+{
+    if (!out || cap < 24) return false;
+    out[0] = 0;
+    if (s_ota_target != kOtaTargetStem) return false;
+    snprintf(out, cap, "%s", kOtaStemLatestSpiffs);
+    return true;
+}
+
 static void append_cache_buster(char* url, size_t cap)
 {
     if (!url || cap < 8) return;
-    if (!strstr(url, "/latest.bin")) return;
+    if (!strstr(url, "/latest.bin") && !strstr(url, "/latest.spiffs.bin")) return;
     size_t len = strlen(url);
     if (len + 20 >= cap) return;
     char sep = (strchr(url, '?') != NULL) ? '&' : '?';
@@ -314,7 +330,8 @@ static void rescan_aps(void)
     }
 }
 
-static bool perform_ota_http(const char* url, char* errbuf, size_t errcap)
+static bool perform_app_ota_http(const char* url, const esp_partition_t** out_update_part,
+                                 char* errbuf, size_t errcap)
 {
     esp_http_client_config_t cfg = {
         .url = url,
@@ -394,9 +411,9 @@ static bool perform_ota_http(const char* url, char* errbuf, size_t errcap)
         if (report_bucket != last_report_bucket) {
             char line[64];
             if (content_len > 0) {
-                snprintf(line, sizeof(line), "Downloading... %d%%", progress);
+                snprintf(line, sizeof(line), "APP... %d%%", progress);
             } else {
-                snprintf(line, sizeof(line), "Downloading... %dKB", downloaded / 1024);
+                snprintf(line, sizeof(line), "APP... %dKB", downloaded / 1024);
             }
             set_state(kStateDownloading, line, progress);
             last_report_bucket = report_bucket;
@@ -415,19 +432,165 @@ static bool perform_ota_http(const char* url, char* errbuf, size_t errcap)
     }
     begun = false;
 
-    err = esp_ota_set_boot_partition(update_part);
-    if (err != ESP_OK) {
-        snprintf(errbuf, errcap, "set boot: %s", esp_err_to_name(err));
-        goto cleanup;
-    }
-
     ok = true;
+    if (out_update_part) *out_update_part = update_part;
 
 cleanup:
     if (begun) esp_ota_abort(ota_handle);
     if (opened) esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return ok;
+}
+
+static bool activate_downloaded_app(const esp_partition_t* update_part, char* errbuf, size_t errcap)
+{
+    if (!update_part) {
+        snprintf(errbuf, errcap, "no downloaded app");
+        return false;
+    }
+    esp_err_t err = esp_ota_set_boot_partition(update_part);
+    if (err != ESP_OK) {
+        snprintf(errbuf, errcap, "set boot: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+static bool perform_spiffs_http(const char* url, char* errbuf, size_t errcap)
+{
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = CONFIG_COMM_WIFI_OTA_HTTP_TIMEOUT_MS,
+        .keep_alive_enable = true,
+    };
+
+    if (strncmp(url, "https://", 8) == 0) {
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        snprintf(errbuf, errcap, "http init failed");
+        return false;
+    }
+
+    const esp_partition_t* spiffs_part =
+        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
+    if (!spiffs_part) {
+        snprintf(errbuf, errcap, "no spiffs partition");
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    bool opened = false;
+    bool ok = false;
+    int content_len = -1;
+    int downloaded = 0;
+    int last_report_bucket = -1;
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        snprintf(errbuf, errcap, "http open: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+    opened = true;
+
+    content_len = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    if (status != 200) {
+        snprintf(errbuf, errcap, "http status %d", status);
+        goto cleanup;
+    }
+
+    if (content_len <= 0) {
+        snprintf(errbuf, errcap, "spiffs size unknown");
+        goto cleanup;
+    }
+    if ((size_t)content_len > spiffs_part->size) {
+        snprintf(errbuf, errcap, "spiffs too large");
+        goto cleanup;
+    }
+
+    err = esp_partition_erase_range(spiffs_part, 0, spiffs_part->size);
+    if (err != ESP_OK) {
+        snprintf(errbuf, errcap, "spiffs erase: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+
+    uint8_t buf[1024];
+    size_t offset = 0;
+    while (!s_abort) {
+        int n = esp_http_client_read(client, (char*)buf, sizeof(buf));
+        if (n < 0) {
+            snprintf(errbuf, errcap, "http read fail");
+            goto cleanup;
+        }
+        if (n == 0) break;
+
+        if (offset + (size_t)n > spiffs_part->size) {
+            snprintf(errbuf, errcap, "spiffs overflow");
+            goto cleanup;
+        }
+
+        err = esp_partition_write(spiffs_part, offset, buf, (size_t)n);
+        if (err != ESP_OK) {
+            snprintf(errbuf, errcap, "spiffs write: %s", esp_err_to_name(err));
+            goto cleanup;
+        }
+
+        offset += (size_t)n;
+        downloaded += n;
+
+        int progress = (downloaded * 100) / content_len;
+        if (progress > 100) progress = 100;
+
+        int report_bucket = downloaded / 8192;
+        if (report_bucket != last_report_bucket) {
+            char line[64];
+            snprintf(line, sizeof(line), "SPIFFS... %d%%", progress);
+            set_state(kStateDownloading, line, progress);
+            last_report_bucket = report_bucket;
+        }
+    }
+
+    if (s_abort) {
+        snprintf(errbuf, errcap, "aborted");
+        goto cleanup;
+    }
+    if (downloaded != content_len) {
+        snprintf(errbuf, errcap, "spiffs short read");
+        goto cleanup;
+    }
+
+    ok = true;
+
+cleanup:
+    if (opened) esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return ok;
+}
+
+static bool perform_selected_upgrade(char* errbuf, size_t errcap)
+{
+    const esp_partition_t* update_part = NULL;
+    char spiffs_url[200];
+
+    set_state(kStateDownloading, "APP... 0%", 0);
+    ESP_LOGI(TAG, "OTA URL: %s", s_ota_url);
+    if (!perform_app_ota_http(s_ota_url, &update_part, errbuf, errcap)) {
+        return false;
+    }
+
+    if (build_selected_spiffs_url(spiffs_url, sizeof(spiffs_url))) {
+        append_cache_buster(spiffs_url, sizeof(spiffs_url));
+        ESP_LOGI(TAG, "SPIFFS URL: %s", spiffs_url);
+        set_state(kStateDownloading, "SPIFFS... 0%", 0);
+        if (!perform_spiffs_http(spiffs_url, errbuf, errcap)) {
+            return false;
+        }
+    }
+
+    return activate_downloaded_app(update_part, errbuf, errcap);
 }
 
 static void qr_capture_cb(const uint8_t* qrcode)
@@ -454,26 +617,19 @@ static void qr_capture_cb(const uint8_t* qrcode)
         }
     }
     s_qr_ready = true;
+    s_ui_dirty = true;
 }
 
-static void build_qr_payload(const char* service_name, const char* pop)
+static void build_qr_payload(const char* text)
 {
-    if (pop && pop[0]) {
-        snprintf(s_qr_payload, sizeof(s_qr_payload),
-                 "{\"ver\":\"v1\",\"name\":\"%s\",\"pop\":\"%s\",\"transport\":\"softap\"}",
-                 service_name, pop);
-    } else {
-        snprintf(s_qr_payload, sizeof(s_qr_payload),
-                 "{\"ver\":\"v1\",\"name\":\"%s\",\"transport\":\"softap\"}",
-                 service_name);
-    }
+    snprintf(s_qr_payload, sizeof(s_qr_payload), "%s", text ? text : "");
 }
 
-static bool gen_qr_for_lcd(const char* service_name, const char* pop)
+static bool gen_qr_for_lcd(const char* text)
 {
     s_qr_ready = false;
     s_qr_size = 0;
-    build_qr_payload(service_name, pop);
+    build_qr_payload(text);
 
     esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
     cfg.display_func = qr_capture_cb;
@@ -496,6 +652,138 @@ static void free_qr_matrix(void)
         s_qr_matrix = NULL;
     }
     s_qr_matrix_cap = 0;
+}
+
+static void url_decode_inplace(char* s)
+{
+    char* src = s;
+    char* dst = s;
+    while (*src) {
+        if (src[0] == '%' && src[1] && src[2]) {
+            char hex[3] = { src[1], src[2], 0 };
+            *dst++ = (char)strtol(hex, NULL, 16);
+            src += 3;
+        } else if (*src == '+') {
+            *dst++ = ' ';
+            src++;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = 0;
+}
+
+static void parse_form_body(char* body, char* out_ssid, size_t ssid_cap, char* out_pwd, size_t pwd_cap)
+{
+    if (!body || !out_ssid || !out_pwd || ssid_cap < 2 || pwd_cap < 2) return;
+    out_ssid[0] = 0;
+    out_pwd[0] = 0;
+
+    for (char* tok = strtok(body, "&"); tok; tok = strtok(NULL, "&")) {
+        char* eq = strchr(tok, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char* k = tok;
+        char* v = eq + 1;
+        url_decode_inplace(k);
+        url_decode_inplace(v);
+        if (strcmp(k, "ssid") == 0) {
+            strncpy(out_ssid, v, ssid_cap - 1);
+            out_ssid[ssid_cap - 1] = 0;
+        } else if (strcmp(k, "pwd") == 0) {
+            strncpy(out_pwd, v, pwd_cap - 1);
+            out_pwd[pwd_cap - 1] = 0;
+        }
+    }
+}
+
+static esp_err_t root_get_handler(httpd_req_t* req)
+{
+    const char* html =
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>STEM WiFi Setup</title></head><body>"
+        "<h2>STEM WiFi Setup</h2>"
+        "<form method='post' action='/wifi'>"
+        "<div><label>SSID</label><br><input name='ssid' style='width:95%'></div>"
+        "<div style='margin-top:10px'><label>Password</label><br><input name='pwd' type='password' style='width:95%'></div>"
+        "<div style='margin-top:14px'><button type='submit'>Connect</button></div>"
+        "</form>"
+        "<p style='margin-top:14px'>After submit, return to device screen.</p>"
+        "</body></html>";
+
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t wifi_post_handler(httpd_req_t* req)
+{
+    int len = req->content_len;
+    if (len <= 0 || len > 255) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "invalid body\n", HTTPD_RESP_USE_STRLEN);
+    }
+
+    char body[256];
+    int r = httpd_req_recv(req, body, len);
+    if (r <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "read failed\n", HTTPD_RESP_USE_STRLEN);
+    }
+    body[r] = 0;
+
+    char ssid[33];
+    char pwd[65];
+    parse_form_body(body, ssid, sizeof(ssid), pwd, sizeof(pwd));
+    if (!ssid[0]) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "ssid required\n", HTTPD_RESP_USE_STRLEN);
+    }
+
+    strncpy(s_pending_ssid, ssid, sizeof(s_pending_ssid) - 1);
+    s_pending_ssid[sizeof(s_pending_ssid) - 1] = 0;
+    strncpy(s_pending_pass, pwd, sizeof(s_pending_pass) - 1);
+    s_pending_pass[sizeof(s_pending_pass) - 1] = 0;
+    s_apply_pending = true;
+    s_ui_dirty = true;
+
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, "saved. device is connecting...\n", HTTPD_RESP_USE_STRLEN);
+}
+
+static bool portal_web_start(void)
+{
+    if (s_httpd) return true;
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.stack_size = OTA_PORTAL_HTTPD_STACK_BYTES;
+    cfg.max_uri_handlers = 3;
+    if (httpd_start(&s_httpd, &cfg) != ESP_OK) {
+        s_httpd = NULL;
+        return false;
+    }
+
+    httpd_uri_t root = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = root_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t wifi = {
+        .uri = "/wifi",
+        .method = HTTP_POST,
+        .handler = wifi_post_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &root);
+    httpd_register_uri_handler(s_httpd, &wifi);
+    return true;
+}
+
+static void portal_web_stop(void)
+{
+    if (!s_httpd) return;
+    httpd_stop(s_httpd);
+    s_httpd = NULL;
 }
 
 static void draw_qr_on_lcd(void)
@@ -536,62 +824,71 @@ static void draw_qr_on_lcd(void)
     }
 }
 
-static bool run_qr_provision(char* errbuf, size_t errcap)
+static bool run_web_provision(char* errbuf, size_t errcap)
 {
-    const char* service_name = "SYSTEM_PROV";
-    const char* pop = "SEESAW2026";
-
-    wifi_prov_mgr_config_t cfg = {
-        .scheme = wifi_prov_scheme_softap,
-        .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE
-    };
-
-    esp_err_t err = wifi_prov_mgr_init(cfg);
-    if (err != ESP_OK) {
-        snprintf(errbuf, errcap, "prov init: %s", esp_err_to_name(err));
+    if (!comm_wifi_switch_to_ap_open(kProvServiceName)) {
+        snprintf(errbuf, errcap, "AP start failed");
         return false;
     }
-
-    bool provisioned = false;
-    err = wifi_prov_mgr_is_provisioned(&provisioned);
-    if (err != ESP_OK) {
-        snprintf(errbuf, errcap, "prov state: %s", esp_err_to_name(err));
-        wifi_prov_mgr_deinit();
+    if (!portal_web_start()) {
+        snprintf(errbuf, errcap, "Web start failed");
         return false;
     }
-
-    if (!provisioned) {
-        set_state(kStateQrProvision, "Scan QR with ESP SoftAP app", 0);
-        if (!gen_qr_for_lcd(service_name, pop)) {
-            set_state(kStateFail, "QR generate failed", 0);
-            wifi_prov_mgr_deinit();
-            return false;
-        }
-        err = wifi_prov_mgr_start_provisioning(WIFI_PROV_SECURITY_1, pop, service_name, NULL);
-        if (err != ESP_OK) {
-            snprintf(errbuf, errcap, "prov start: %s", esp_err_to_name(err));
-            wifi_prov_mgr_deinit();
-            return false;
-        }
-    } else {
-        set_state(kStateQrProvision, "Already provisioned, connecting", 0);
+    set_state(kStateQrProvision, "Join AP and open 192.168.4.1", 0);
+    if (!gen_qr_for_lcd(kPortalUrl)) {
+        ESP_LOGW(TAG, "Portal QR generate failed");
     }
 
-    comm_wifi_start();
     uint32_t t0 = now_ms();
-    while (!s_abort && !comm_wifi_is_connected()) {
-        if ((now_ms() - t0) > 120000U) {
-            snprintf(errbuf, errcap, "provision timeout");
-            wifi_prov_mgr_stop_provisioning();
-            wifi_prov_mgr_deinit();
+    while (!s_abort && !s_apply_pending) {
+        if ((now_ms() - t0) > 600000U) {
+            snprintf(errbuf, errcap, "portal timeout");
+            portal_web_stop();
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(120));
     }
 
-    wifi_prov_mgr_stop_provisioning();
-    wifi_prov_mgr_deinit();
-    return !s_abort;
+    if (s_abort) {
+        snprintf(errbuf, errcap, "aborted");
+        portal_web_stop();
+        return false;
+    }
+
+    char ssid[33];
+    char pass[65];
+    strncpy(ssid, s_pending_ssid, sizeof(ssid) - 1);
+    ssid[sizeof(ssid) - 1] = 0;
+    strncpy(pass, s_pending_pass, sizeof(pass) - 1);
+    pass[sizeof(pass) - 1] = 0;
+    s_apply_pending = false;
+    portal_web_stop();
+
+    set_state(kStateConnecting, "Connecting WiFi...", 0);
+    comm_wifi_start();
+    if (!comm_wifi_connect_psk(ssid, pass)) {
+        snprintf(errbuf, errcap, "WiFi connect start failed");
+        return false;
+    }
+
+    t0 = now_ms();
+    while (!s_abort && !comm_wifi_is_connected()) {
+        if ((now_ms() - t0) > (uint32_t)CONFIG_COMM_WIFI_CONNECT_TIMEOUT_MS) {
+            snprintf(errbuf, errcap, "WiFi connect timeout");
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (s_abort) {
+        snprintf(errbuf, errcap, "aborted");
+        return false;
+    }
+
+    strncpy(s_sel_ssid, ssid, sizeof(s_sel_ssid) - 1);
+    s_sel_ssid[sizeof(s_sel_ssid) - 1] = 0;
+    save_pass(ssid, pass);
+    return true;
 }
 
 static void ota_task(void* arg)
@@ -645,9 +942,7 @@ static void ota_task(void* arg)
     // Cache password for this SSID after connection succeeds.
     save_pass(ssid, pass);
 
-    set_state(kStateDownloading, "Downloading... 0%", 0);
-    ESP_LOGI(TAG, "OTA URL: %s", s_ota_url);
-    if (!perform_ota_http(s_ota_url, err, sizeof(err))) {
+    if (!perform_selected_upgrade(err, sizeof(err))) {
         set_state(kStateFail, err[0] ? err : "OTA failed", 0);
         ota_task_exit();
         return;
@@ -670,15 +965,13 @@ static void qr_ota_task(void* arg)
         return;
     }
 
-    if (!run_qr_provision(err, sizeof(err))) {
-        set_state(kStateFail, err[0] ? err : "QR provision failed", 0);
+    if (!run_web_provision(err, sizeof(err))) {
+        set_state(kStateFail, err[0] ? err : "Web provision failed", 0);
         ota_task_exit();
         return;
     }
 
-    set_state(kStateDownloading, "Downloading... 0%", 0);
-    ESP_LOGI(TAG, "OTA URL: %s", s_ota_url);
-    if (!perform_ota_http(s_ota_url, err, sizeof(err))) {
+    if (!perform_selected_upgrade(err, sizeof(err))) {
         set_state(kStateFail, err[0] ? err : "OTA failed", 0);
         ota_task_exit();
         return;
@@ -708,9 +1001,7 @@ static void ota_task_connected(void* arg)
         return;
     }
 
-    set_state(kStateDownloading, "Downloading... 0%", 0);
-    ESP_LOGI(TAG, "OTA URL: %s", s_ota_url);
-    if (!perform_ota_http(s_ota_url, err, sizeof(err))) {
+    if (!perform_selected_upgrade(err, sizeof(err))) {
         set_state(kStateFail, err[0] ? err : "OTA failed", 0);
         ota_task_exit();
         return;
@@ -780,9 +1071,9 @@ static void draw_ui(void)
     }
 
     if (s_state == kStateQrProvision) {
-        Ui_DrawBodyTextRowColor(2, "QR Provisioning...", c_text());
-        Ui_DrawBodyTextRowColor(3, "Scan this code with app", c_info());
-        Ui_DrawBodyTextRowColor(4, "APP: Espressif SoftAP", c_info());
+        Ui_DrawBodyTextRowColor(2, "WEB Provisioning...", c_text());
+        Ui_DrawBodyTextRowColor(3, "SSID: SOY_GAME_TECK", c_info());
+        Ui_DrawBodyTextRowColor(4, "URL: 192.168.4.1", c_info());
         draw_qr_on_lcd();
         return;
     }
@@ -833,6 +1124,9 @@ static void start(ExperimentContext* ctx)
     s_qr_ready = false;
     s_qr_size = 0;
     s_qr_payload[0] = 0;
+    s_apply_pending = false;
+    s_pending_ssid[0] = 0;
+    s_pending_pass[0] = 0;
     s_ota_url[0] = 0;
     s_ota_target = ota_target_from_url(CONFIG_COMM_WIFI_OTA_URL);
     (void)build_selected_ota_url(s_ota_url, sizeof(s_ota_url));
@@ -859,6 +1153,7 @@ static void stop(ExperimentContext* ctx)
 {
     (void)ctx;
     s_abort = true;
+    portal_web_stop();
     free_qr_matrix();
 }
 
@@ -999,8 +1294,8 @@ static void tick(ExperimentContext* ctx)
         }
     }
     if (!s_ui_dirty) return;
-    draw_ui();
     s_ui_dirty = false;
+    draw_ui();
 }
 
 const Experiment g_exp_wifi_ota = {

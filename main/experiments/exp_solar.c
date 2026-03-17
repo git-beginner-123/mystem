@@ -40,6 +40,9 @@ typedef struct {
 
 static const SolarClip kClips[] = {
     {"SPACE TOTAL", "/spiffs/space_total.mjpeg"},
+    {"SPACE NATURAL", "/spiffs/space_total_natural_422.mjpeg"},
+    {"SPACE NIGHT", "/spiffs/space_total_night_422.mjpeg"},
+    {"LUNAR ECLIPSE", "/spiffs/lunar_eclipse_240.mjpeg"},
 };
 
 static int s_idx = 0;
