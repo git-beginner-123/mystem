@@ -26,7 +26,7 @@
 #include <stdbool.h>
 
 static const char* TAG = "EXP_SYSTEM";
-static const char* kSystemTitle = "SETTING";
+static const char* kSystemTitle = "OTA APP";
 static const char* kSystemCopyright = "Copyright (C) 2026 SEESAW";
 static const char* kOtaGameLatestBase = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota_bins/game";
 static const char* kOtaStemLatestBin = "https://raw.githubusercontent.com/git-beginner-123/OTA/main/ota_bins/stem/latest.bin";
@@ -94,6 +94,7 @@ static const char kPassChars[] =
 #define OTA_TASK_STACK_BYTES      6144
 #define OTA_QR_TASK_STACK_BYTES   7168
 #define OTA_PORTAL_HTTPD_STACK_BYTES 3584
+#define WIFI_PREP_TASK_STACK_BYTES 7168
 
 static void ota_task_exit(void)
 {
@@ -282,8 +283,12 @@ static void draw_status_dynamic_rows(void)
         const char spinner[] = "|/-\\";
         int ph = s_anim_phase & 3;
         snprintf(status_line, sizeof(status_line), "Status: %c %.52s", spinner[ph], s_status);
+    } else if (s_state == kStateQrProvision) {
+        snprintf(status_line, sizeof(status_line), "Status: WIFI SETUP");
+    } else if (comm_wifi_is_connected()) {
+        snprintf(status_line, sizeof(status_line), "Status: WIFI CONNECTED");
     } else {
-        snprintf(status_line, sizeof(status_line), "Status: %.55s", s_status);
+        snprintf(status_line, sizeof(status_line), "Status: NOT CONNECTED");
     }
 
     uint16_t status_color = c_text();
@@ -299,7 +304,7 @@ static void draw_status_dynamic_rows(void)
     } else if (s_state == kStateConnecting && comm_wifi_is_connected()) {
         Ui_DrawBodyTextRowColor(4, "Press OK to start OTA", c_info());
     } else {
-        snprintf(line, sizeof(line), "OTA: %s", ota_target_name(s_ota_target));
+        snprintf(line, sizeof(line), "TARGET APP: %s", ota_target_name(s_ota_target));
         Ui_DrawBodyTextRowColor(4, line, c_text());
     }
 }
@@ -774,8 +779,15 @@ static bool portal_web_start(void)
         .handler = wifi_post_handler,
         .user_ctx = NULL
     };
+    httpd_uri_t wifi_get = {
+        .uri = "/wifi",
+        .method = HTTP_GET,
+        .handler = root_get_handler,
+        .user_ctx = NULL
+    };
     httpd_register_uri_handler(s_httpd, &root);
     httpd_register_uri_handler(s_httpd, &wifi);
+    httpd_register_uri_handler(s_httpd, &wifi_get);
     return true;
 }
 
@@ -864,8 +876,15 @@ static bool run_web_provision(char* errbuf, size_t errcap)
     s_apply_pending = false;
     portal_web_stop();
 
+    strncpy(s_sel_ssid, ssid, sizeof(s_sel_ssid) - 1);
+    s_sel_ssid[sizeof(s_sel_ssid) - 1] = 0;
+
     set_state(kStateConnecting, "Connecting WiFi...", 0);
-    comm_wifi_start();
+    if (!comm_wifi_switch_to_sta_only()) {
+        snprintf(errbuf, errcap, "WiFi STA start failed");
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(120));
     if (!comm_wifi_connect_psk(ssid, pass)) {
         snprintf(errbuf, errcap, "WiFi connect start failed");
         return false;
@@ -888,7 +907,51 @@ static bool run_web_provision(char* errbuf, size_t errcap)
     strncpy(s_sel_ssid, ssid, sizeof(s_sel_ssid) - 1);
     s_sel_ssid[sizeof(s_sel_ssid) - 1] = 0;
     save_pass(ssid, pass);
+    (void)comm_wifi_save_credential(ssid, pass);
     return true;
+}
+
+static void wifi_prepare_task(void* arg)
+{
+    (void)arg;
+    char err[64] = {0};
+
+    comm_wifi_start();
+    if (comm_wifi_is_connected()) {
+        if (!comm_wifi_get_connected_ssid(s_sel_ssid, (int)sizeof(s_sel_ssid))) {
+            s_sel_ssid[0] = 0;
+        }
+        set_state(kStateConnecting, "WiFi connected. OK to start OTA", 0);
+        ota_task_exit();
+        return;
+    }
+
+    int saved_count = comm_wifi_saved_credential_count();
+    if (saved_count <= 0) {
+        set_state(kStateQrProvision, "No saved WiFi. Provisioning", 0);
+        if (!run_web_provision(err, sizeof(err))) {
+            set_state(kStateFail, err[0] ? err : "Web provision failed", 0);
+            ota_task_exit();
+            return;
+        }
+        set_state(kStateConnecting, "WiFi ready. OK to start OTA", 0);
+        ota_task_exit();
+        return;
+    }
+
+    char ssid[33] = {0};
+    set_state(kStateConnecting, "Checking saved WiFi", 0);
+    (void)comm_wifi_switch_to_sta_only();
+    if (comm_wifi_connect_saved_any(7000, ssid, (int)sizeof(ssid))) {
+        strncpy(s_sel_ssid, ssid, sizeof(s_sel_ssid) - 1);
+        s_sel_ssid[sizeof(s_sel_ssid) - 1] = 0;
+        set_state(kStateConnecting, "WiFi connected. OK to start OTA", 0);
+        ota_task_exit();
+        return;
+    }
+
+    set_state(kStateFail, "WiFi not connected", 0);
+    ota_task_exit();
 }
 
 static void ota_task(void* arg)
@@ -1013,6 +1076,18 @@ static void ota_task_connected(void* arg)
     esp_restart();
 }
 
+static void start_wifi_prepare(void)
+{
+    s_abort = false;
+    s_apply_pending = false;
+    s_pending_ssid[0] = 0;
+    s_pending_pass[0] = 0;
+    set_state(kStateConnecting, "Checking WiFi...", 0);
+    if (xTaskCreate(wifi_prepare_task, "wifi_prep", WIFI_PREP_TASK_STACK_BYTES, NULL, 4, &s_ota_task) != pdPASS) {
+        set_state(kStateFail, "WiFi task create failed", 0);
+    }
+}
+
 static void draw_ui(void)
 {
     char line[64];
@@ -1066,12 +1141,12 @@ static void draw_ui(void)
         Ui_DrawBodyTextRowColor(5, "OK:add/del/connect", c_text());
         snprintf(line, sizeof(line), "TARGET: %s", ota_target_name(s_ota_target));
         Ui_DrawBodyTextRowColor(6, line, c_ok());
-        Ui_DrawBodyTextRowColor(7, "LR: GO/CHESS/DICE/GOMOKU/STEM", c_info());
+        Ui_DrawBodyTextRowColor(7, "LR: GO/CHESS/GOMOKU/DICE/STEM", c_info());
         return;
     }
 
     if (s_state == kStateQrProvision) {
-        Ui_DrawBodyTextRowColor(2, "WEB Provisioning...", c_text());
+        Ui_DrawBodyTextRowColor(2, "Status: WIFI SETUP", c_text());
         Ui_DrawBodyTextRowColor(3, "SSID: SOY_GAME_TECK", c_info());
         Ui_DrawBodyTextRowColor(4, "URL: 192.168.4.1", c_info());
         draw_qr_on_lcd();
@@ -1088,12 +1163,17 @@ static void draw_ui(void)
 
     draw_status_dynamic_rows();
 
+    if (!comm_wifi_is_connected() && s_sel_ssid[0]) {
+        snprintf(line, sizeof(line), "SSID: %.56s", s_sel_ssid);
+        Ui_DrawBodyTextRowColor(2, line, c_text());
+    }
+
     if (s_state == kStateConnecting && comm_wifi_is_connected()) {
         Ui_DrawBodyTextRowColor(5, "OK: start OTA  DN: forget WiFi", c_text());
     }
 
     if (s_state == kStateFail) {
-        Ui_DrawBodyTextRowColor(5, "OK: rescan AP", c_text());
+        Ui_DrawBodyTextRowColor(5, "OK: retry WiFi setup", c_text());
     }
 
     s_need_full_redraw = false;
@@ -1103,10 +1183,10 @@ static void show_requirements(ExperimentContext* ctx)
 {
     (void)ctx;
     Ui_DrawFrame(kSystemTitle, "OK:START  BACK");
-    Ui_Println("1) SYSTEM OTA");
-    Ui_Println("2) Select AP + password");
-    Ui_Println("3) LR choose OTA app");
-    Ui_Println("4) Download and upgrade");
+    Ui_Println("1) OTA switch to another APP");
+    Ui_Println("2) Select WiFi AP + password");
+    Ui_Println("3) LR choose GO/CHESS/GOMOKU/DICE/STEM");
+    Ui_Println("4) Download target APP and upgrade");
     Ui_Println("Success: auto reboot");
 }
 
@@ -1136,15 +1216,7 @@ static void start(ExperimentContext* ctx)
     s_last_anim_ms = 0;
     s_anim_phase = 0;
 
-    comm_wifi_start();
-    if (comm_wifi_is_connected()) {
-        if (!comm_wifi_get_connected_ssid(s_sel_ssid, (int)sizeof(s_sel_ssid))) {
-            s_sel_ssid[0] = 0;
-        }
-        set_state(kStateConnecting, "WiFi ready. OK to start OTA", 0);
-    } else {
-        rescan_aps();
-    }
+    start_wifi_prepare();
     s_ui_dirty = true;
     draw_ui();
 }
@@ -1278,7 +1350,7 @@ static void on_key(ExperimentContext* ctx, InputKey key)
     }
 
     if (s_state == kStateFail && key == kInputEnter) {
-        rescan_aps();
+        start_wifi_prepare();
     }
 }
 
@@ -1300,7 +1372,7 @@ static void tick(ExperimentContext* ctx)
 
 const Experiment g_exp_wifi_ota = {
     .id = 16,
-    .title = "SYSTEM",
+    .title = "OTA APP",
     .on_enter = 0,
     .on_exit = 0,
     .show_requirements = show_requirements,

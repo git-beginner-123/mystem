@@ -359,6 +359,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
 void comm_wifi_start(void)
 {
     if (s_started) {
+        wifi_mode_t mode = WIFI_MODE_NULL;
+        if (esp_wifi_get_mode(&mode) == ESP_OK) {
+            if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+                ESP_LOGI(TAG, "wifi already in AP/APSTA mode, keep current mode");
+                return;
+            }
+        }
         esp_wifi_set_mode(WIFI_MODE_STA);
         esp_wifi_start();
         esp_wifi_set_ps(WIFI_PS_NONE);
